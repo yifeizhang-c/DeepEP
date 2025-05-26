@@ -75,7 +75,7 @@ private:
     void move_fifo_slots(int num_slots = 1);
 
 public:
-    Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_bytes, bool low_latency_mode);
+    Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_bytes, bool low_latency_mode, int num_nvl_peers);
 
     ~Buffer() noexcept(false);
 

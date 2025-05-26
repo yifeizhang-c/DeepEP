@@ -31,8 +31,10 @@ class Buffer:
 
     def __init__(self, group: dist.ProcessGroup,
                  num_nvl_bytes: int = 0, num_rdma_bytes: int = 0,
-                 low_latency_mode: bool = False, num_qps_per_rank: int = 12,
-                 allow_nvlink_for_low_latency_mode: bool = True) -> None:
+                 low_latency_mode: bool = False, num_nvl_peers: int = 8,
+                 num_qps_per_rank: int = 12,
+                 allow_nvlink_for_low_latency_mode: bool = True,
+                 ) -> None:
         """
         Initialize the communication buffer.
 
@@ -41,6 +43,7 @@ class Buffer:
             num_nvl_bytes: the buffer size for intranode NVLink communication.
             num_rdma_bytes: the buffer size for internode (also for intranode with low-latency mode) RDMA communication.
             low_latency_mode: whether to enable low-latency mode.
+            num_nvl_peers: the number of devices connected by NVLink.
             num_qps_per_rank: the number of QPs for RDMA, the low-latency mode requires that this number equals
                 to the number of local experts.
             allow_nvlink_for_low_latency_mode: whether allow NVLink traffic for low-latency mode, you should notice
@@ -56,7 +59,8 @@ class Buffer:
         self.num_nvl_bytes = num_nvl_bytes
         self.num_rdma_bytes = num_rdma_bytes
         self.low_latency_mode = low_latency_mode
-        self.runtime = deep_ep_cpp.Buffer(self.rank, self.group_size, num_nvl_bytes, num_rdma_bytes, low_latency_mode)
+        self.num_nvl_peers = num_nvl_peers
+        self.runtime = deep_ep_cpp.Buffer(self.rank, self.group_size, num_nvl_bytes, num_rdma_bytes, low_latency_mode, num_nvl_peers)
 
         # Synchronize device IDs
         device_ids = [None, ] * self.group_size

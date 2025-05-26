@@ -13,7 +13,7 @@
 
 namespace deep_ep {
 
-Buffer::Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_bytes, bool low_latency_mode):
+Buffer::Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_bytes, bool low_latency_mode, int num_nvl_peers):
         rank(rank), num_ranks(num_ranks),
         num_nvl_bytes(num_nvl_bytes), num_rdma_bytes(num_rdma_bytes),
         low_latency_mode(low_latency_mode),
@@ -26,15 +26,16 @@ Buffer::Buffer(int rank, int num_ranks, int64_t num_nvl_bytes, int64_t num_rdma_
     // Common checks
     EP_HOST_ASSERT(num_nvl_bytes % NUM_BUFFER_ALIGNMENT_BYTES == 0 and (num_nvl_bytes <= std::numeric_limits<int>::max() or num_rdma_bytes == 0));
     EP_HOST_ASSERT(num_rdma_bytes % NUM_BUFFER_ALIGNMENT_BYTES == 0 and (low_latency_mode or num_rdma_bytes <= std::numeric_limits<int>::max()));
-    EP_HOST_ASSERT(0 <= rank and rank < num_ranks and (num_ranks <= NUM_MAX_NVL_PEERS * NUM_MAX_RDMA_PEERS or low_latency_mode));
-    EP_HOST_ASSERT(num_ranks < NUM_MAX_NVL_PEERS or num_ranks % NUM_MAX_NVL_PEERS == 0);
+    EP_HOST_ASSERT(1 <= num_nvl_peers and num_nvl_peers <= NUM_MAX_NVL_PEERS);
+    EP_HOST_ASSERT(0 <= rank and rank < num_ranks and (num_ranks <= num_nvl_peers * NUM_MAX_RDMA_PEERS or low_latency_mode));
+    EP_HOST_ASSERT(num_ranks < num_nvl_peers or num_ranks % num_nvl_peers == 0);
     if (num_rdma_bytes > 0)
-        EP_HOST_ASSERT(num_ranks > NUM_MAX_NVL_PEERS or low_latency_mode);
+        EP_HOST_ASSERT(num_ranks > num_nvl_peers or low_latency_mode);
 
     // Get ranks
     CUDA_CHECK(cudaGetDevice(&device_id));
-    rdma_rank = rank / NUM_MAX_NVL_PEERS, nvl_rank = rank % NUM_MAX_NVL_PEERS;
-    num_rdma_ranks = std::max(1, num_ranks / NUM_MAX_NVL_PEERS), num_nvl_ranks = std::min(num_ranks, NUM_MAX_NVL_PEERS);
+    rdma_rank = rank / num_nvl_peers, nvl_rank = rank % num_nvl_peers;
+    num_rdma_ranks = std::max(1, num_ranks / num_nvl_peers), num_nvl_ranks = std::min(num_ranks, num_nvl_peers);
 
     // Get device info
     cudaDeviceProp device_prop = {};
@@ -1223,7 +1224,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("current_stream_wait", &deep_ep::EventHandle::current_stream_wait);
 
     pybind11::class_<deep_ep::Buffer>(m, "Buffer")
-        .def(pybind11::init<int, int, int64_t, int64_t, bool>())
+        .def(pybind11::init<int, int, int64_t, int64_t, bool, int>())
         .def("is_available", &deep_ep::Buffer::is_available)
         .def("get_num_rdma_ranks", &deep_ep::Buffer::get_num_rdma_ranks)
         .def("get_rdma_rank", &deep_ep::Buffer::get_rdma_rank)
