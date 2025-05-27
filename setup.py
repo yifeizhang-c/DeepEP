@@ -19,7 +19,6 @@ if __name__ == '__main__':
     sources = ['csrc/deep_ep.cpp',
                'csrc/kernels/runtime.cu', 'csrc/kernels/intranode.cu',
                'csrc/kernels/internode.cu', 'csrc/kernels/internode_ll.cu']
-    library_dirs = [f'{nvshmem_dir}/lib']
 
     # Disable aggressive PTX instructions
     if int(os.getenv('DISABLE_AGGRESSIVE_PTX_INSTRS', '0')):
@@ -27,8 +26,9 @@ if __name__ == '__main__':
         nvcc_flags.append('-DDISABLE_AGGRESSIVE_PTX_INSTRS')
 
     # Disable DLTO (default by PyTorch)
-    nvcc_dlink = ['-dlink', f'-L{nvshmem_dir}/lib', '-lnvshmem']
-    extra_link_args = ['-l:libnvshmem.a', '-l:nvshmem_bootstrap_uid.so', f'-Wl,-rpath,{nvshmem_dir}/lib']
+    nvcc_dlink = ['-dlink', f'{nvshmem_dir}/lib/libnvshmem.a']
+    extra_link_args = [f'{nvshmem_dir}/lib/libnvshmem.a', f'-Wl,-rpath,{nvshmem_dir}/lib',
+                       '-Wl,--version-script,deep_ep_cpp.version', '-Wl,--no-undefined-version']
     extra_compile_args = {
         'cxx': cxx_flags,
         'nvcc': nvcc_flags,
@@ -52,7 +52,6 @@ if __name__ == '__main__':
             CUDAExtension(
                 name='deep_ep_cpp',
                 include_dirs=include_dirs,
-                library_dirs=library_dirs,
                 sources=sources,
                 extra_compile_args=extra_compile_args,
                 extra_link_args=extra_link_args
