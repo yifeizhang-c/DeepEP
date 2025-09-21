@@ -23,7 +23,7 @@ __global__ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
         clean_1[i] = 0;
 
     if (thread_id == 0) {
-        printf("Cleaning low-latency buffer at timestamp: %llu\n, address of clean_0: %p, address of clean_1: %p\n", clock64(), clean_0, clean_1);
+        printf("Cleaning low-latency buffer at timestamp: %llu, address of clean_0: %p, address of clean_1: %p\n", clock64(), clean_0, clean_1);
     }
     // Barrier after cleaning (make sure the low-latency mode works fine)
     nvshmemx_barrier_all_block();

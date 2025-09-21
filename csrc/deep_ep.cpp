@@ -214,7 +214,7 @@ void Buffer::sync(const std::vector<int> &device_ids,
 
         // Clean buffer (mainly for low-latency mode)
         CUDA_CHECK(cudaMemset(rdma_buffer_ptr, 0, num_rdma_bytes));
-        printf("Cleaning low-latency buffer at timestamp: %llu\n, address of rdma_buffer_ptr: %p\n", std::chrono::system_clock::now(), rdma_buffer_ptr);
+        printf("Cleaning low-latency buffer at timestamp: %llu, address of rdma_buffer_ptr: %p\n", std::chrono::system_clock::now(), rdma_buffer_ptr);
 
         // Barrier
         internode::barrier();
@@ -1107,6 +1107,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     auto num_scales = hidden / 128, num_topk = static_cast<int>(topk_idx.size(1));
     auto num_local_experts = num_experts / num_ranks;
 
+    internode::barrier();
+
     // Buffer control
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
     EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
@@ -1315,6 +1317,8 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     auto hidden = static_cast<int>(x.size(2));
     auto num_topk = static_cast<int>(topk_weights.size(1));
     auto num_combined_tokens = static_cast<int>(topk_weights.size(0));
+
+    internode::barrier();
 
     // Buffer control
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
