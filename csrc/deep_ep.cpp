@@ -214,7 +214,7 @@ void Buffer::sync(const std::vector<int> &device_ids,
 
         // Clean buffer (mainly for low-latency mode)
         CUDA_CHECK(cudaMemset(rdma_buffer_ptr, 0, num_rdma_bytes));
-        printf("Cleaning low-latency buffer at timestamp: %llu\n, address of rdma_buffer_ptr: %p\n", clock64(), rdma_buffer_ptr);
+        printf("Cleaning low-latency buffer at timestamp: %llu\n, address of rdma_buffer_ptr: %p\n", std::chrono::system_clock::now(), rdma_buffer_ptr);
 
         // Barrier
         internode::barrier();
