@@ -22,6 +22,9 @@ __global__ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
     for (int i = thread_id; i < num_clean_int_1; i += kNumThreads)
         clean_1[i] = 0;
 
+    if (thread_id == 0) {
+        printf("Cleaning low-latency buffer at timestamp: %llu\n, address of clean_0: %p, address of clean_1: %p\n", clock64(), clean_0, clean_1);
+    }
     // Barrier after cleaning (make sure the low-latency mode works fine)
     nvshmemx_barrier_all_block();
 }
@@ -36,6 +39,12 @@ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
                   clean_0, num_clean_int_0, clean_1, num_clean_int_1);
 }
 
+// packed_recv_x/packed_recv_src_info/packed_recv_layout_range/packed_recv_count
+// packed_recv_x: [num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden]
+// packed_recv_src_info: [num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank]
+// packed_recv_layout_range: [num_local_experts, num_ranks]
+// packed_recv_count: [num_local_experts]
+// rdma_recv_count: buffer.dispatch_rdma_recv_count_buffer
 template <bool kUseFP8, bool kUseUE8M0, int kHidden>
 __global__ __launch_bounds__(1024, 1) void
 dispatch(void* packed_recv_x, void* packed_recv_x_scales,
@@ -52,13 +61,31 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
          bool round_scale, int phases) {
     const auto sm_id = static_cast<int>(blockIdx.x);
     const auto thread_id = static_cast<int>(threadIdx.x);
+    // warp_id == 0-31
     const auto warp_id = thread_id / 32, lane_id = get_lane_id();
     const auto num_sms = static_cast<int>(gridDim.x);
     const auto num_warps = num_warp_groups * num_warps_per_group;
     const auto num_local_experts = num_experts / num_ranks;
+    // warp_group_id == 0
     const auto warp_group_id = warp_id / num_warps_per_group;
+    // sub_warp_id == 0-31
     const auto sub_warp_id = warp_id % num_warps_per_group;
+    // num_warps_per_group == 32
+    // warp_group_id == 0
+    // num_warp_groups == 1
     const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
+    if (sm_id == 0 && thread_id == 0) {
+        printf("Calling dispatch\n");
+    }
+
+    // check whether zero initialized
+    if (responsible_expert_idx < num_experts) {
+        if (thread_id == 0) {
+            int num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + responsible_expert_idx);
+            printf("Timestamp: %llu, sm_id: %d, rdma_recv_count + responsible_expert_idx: %p, num_recv_tokens: %d\n", clock64(), sm_id, rdma_recv_count + responsible_expert_idx, num_recv_tokens);
+        }
+    }
+    // nvshmemx_barrier_all_block();
 
     // May extract UE8M0 from the scales
     using scale_t = std::conditional_t<kUseUE8M0, uint8_t, float>;
@@ -148,11 +175,20 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
 
             // Issue IBGDA sends
             if (dst_expert_idx >= 0) {
+                // the offset of the current token w.r.t. its destination expert
                 int slot_idx = lane_id == 0 ? atomicAdd(atomic_counter_per_expert + dst_expert_idx, 1) : 0;
                 slot_idx = __shfl_sync(0xffffffff, slot_idx, 0);
                 const auto dst_rank = dst_expert_idx / num_local_experts;
+                // with a range of 0-4
                 const auto dst_expert_local_idx = dst_expert_idx % num_local_experts;
+                // dealing with pointers here
+                // rdma_x_src_idx is a pointer to source token contents
                 const auto src_ptr = reinterpret_cast<uint64_t>(rdma_x_src_idx);
+                // rdma_recv_x is a pointer to destination
+                // dst_local_expert_idx * 16 * 2304 * num_bytes_per_msg + src_rank * 2304 * num_bytes_per_msg + slot_idx * num_bytes_per_msg
+                // slot_idx is the offset of the current token w.r.t. its destination expert
+                // this part will not go out of bound, as number of slot_idx will not exceed 16 * 2304
+                // worst case is all 16 ranks have its 2304 tokens sent to this destination expert
                 const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_x) +
                                      dst_expert_local_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
                                      rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
@@ -209,6 +245,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             auto sum = warp_reduce_sum(expert_count[i - expert_begin_idx]);
             if (lane_id == 0) {
                 shared_num_tokens_sent_per_expert[i - expert_begin_idx] = sum;
+                printf("sm_id: %d, shared_num_tokens_sent_per_expert = %d\n", sm_id, sum);
                 atomic_add_release_global(atomic_finish_counter_per_expert + i, FINISHED_SUM_TAG - sum);
             }
         }
@@ -219,16 +256,26 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     if (responsible_expert_idx < num_experts and sub_warp_id == 0 and lane_id == 0) {
         const auto dst_rank = responsible_expert_idx / num_local_experts;
         const auto dst_expert_local_idx = responsible_expert_idx % num_local_experts;
+        // num_tokens_sent from src_rank to dst_rank
         const auto num_tokens_sent = shared_num_tokens_sent_per_expert[responsible_expert_idx - sm_id * num_warp_groups];
+
+        printf("dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d\n", dst_rank, dst_expert_local_idx, num_tokens_sent);
 
         // Wait local sends issued and send expert counts
         while (ld_acquire_global(atomic_finish_counter_per_expert + responsible_expert_idx) != FINISHED_SUM_TAG * 2);
+        // dst_expert_local_idx * 16 + src_rank
         auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_count + dst_expert_local_idx * num_ranks + rank);
         auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
         if (dst_p2p_ptr == 0) {
+            // void *rptr, const int& value, int pe, int qp_id
+            // dst_rank * num_rc_per_pe + dst_expert_local_idx % num_rc_per_pe
+            printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", clock64(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
             nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
         } else {
+            printf("Timestamp: %llu, performing st_release_sys_global with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", clock64(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
             st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), -num_tokens_sent - 1);
+            // printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add on local node dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", clock64(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
+            // nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
         }
 
         // Clean workspace for next use
@@ -250,16 +297,26 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     if (phases & LOW_LATENCY_SEND_PHASE)
         cg::this_grid().sync();
 
+    if (sm_id == 0 && thread_id == 0) {
+        printf("Calling the second part: Receiving and packing.\n");
+    }
     // Receiving and packing
+    // responsible_expert_idx is the index of the expert sending the token to the current expert
+    // responsible_expert_idx == sm_id
     if (responsible_expert_idx < num_experts) {
         const auto src_rank = responsible_expert_idx / num_local_experts;
+        // local_expert_idx == 0 - 4
         const auto local_expert_idx = responsible_expert_idx % num_local_experts;
         const auto rdma_recv_x_uint8 = static_cast<uint8_t*>(rdma_recv_x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
                 src_rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg;
+        // [num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden]
+        // packed_recv_x + 4 * 16 * 2304 * hidden_int4
         const auto recv_x_int4 = static_cast<int4*>(packed_recv_x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * hidden_int4;
+        // packed_recv_src_info + 4 * 16 * 2304
         const auto recv_src_info = packed_recv_src_info + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank;
+        // packed_recv_layout_range + 4 * 16
         const auto recv_range = packed_recv_layout_range + local_expert_idx * num_ranks;
         const auto num_aligned_scales = align<int>(num_scales, sizeof(float) / sizeof(scale_t));
         const auto recv_x_scales = static_cast<scale_t*>(packed_recv_x_scales) + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_aligned_scales;
@@ -274,7 +331,9 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         if (sub_warp_id == 1 and lane_id == 0) {
             while ((num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank)) == 0);
             num_recv_tokens = -num_recv_tokens - 1;
+            // reduce over num_recv_tokens over all ranks for local experts 
             recv_token_begin_idx = atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
+            printf("Timestamp: %llu, End receiving tokens: sm_id: %d, thread_id: %d, src_rank: %d, local_expert_idx: %d, num_recv_tokens: %d, recv_token_begin_idx: %d\n", clock64(), sm_id, thread_id, src_rank, local_expert_idx, num_recv_tokens, recv_token_begin_idx);
             shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
             shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
             recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
@@ -287,9 +346,11 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
 
         // Copy tokens
         EP_DEVICE_ASSERT(num_scales <= 64);
+        // this part may have illegal memory access!!!
         for (int i = sub_warp_id; i < num_recv_tokens; i += num_warps_per_group) {
             // Copy source info
             const auto src_src_idx = reinterpret_cast<int*>(rdma_recv_x_uint8 + i * num_bytes_per_msg);
+            // recv_token_begin_idx + i shall be less than 2304 * 16
             if (lane_id == 0)
                 recv_src_info[recv_token_begin_idx + i] = ld_nc_global(src_src_idx);
             __syncwarp();
@@ -297,6 +358,9 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             // Copy data
             // NOTES: only 2 load iterations for 7K hidden with 7 unrolls
             const auto src_data = reinterpret_cast<int4*>(reinterpret_cast<uint8_t*>(src_src_idx) + sizeof(int4));
+            // {5, 16 * 2304, hidden}
+            // packed_recv_x + 4 * 16 * 2304 * hidden_int4 + (recv_token_begin_idx + i) * hidden_int4
+            // if recv_token_begin_idx + i > 16 * 2304, illegal memory access
             const auto dst_data = recv_x_int4 + (recv_token_begin_idx + i) * hidden_int4;
             UNROLLED_WARP_COPY(7, lane_id, hidden_int4, dst_data, src_data, ld_nc_global, st_na_global);
 
@@ -344,7 +408,9 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     EP_HOST_ASSERT(num_warp_groups > 0 and num_warps_per_group > 0);
     EP_HOST_ASSERT(kNumMaxTopK + 1 <= num_warp_groups * num_warps_per_group);
 
+    // num_warps == 32
     const auto num_warps = num_warp_groups * num_warps_per_group;
+    // num_sms == 80
     const auto num_sms = ceil_div(num_experts, num_warp_groups);
     EP_HOST_ASSERT(num_topk <= kNumMaxTopK);
 
@@ -399,11 +465,18 @@ combine(void* combined_x,
     const auto num_sms = static_cast<int>(gridDim.x);
     const auto thread_id = static_cast<int>(threadIdx.x);
     const auto num_threads = static_cast<int>(blockDim.x);
+    // warp_id == 0-31
     const auto warp_id = thread_id / 32, lane_id = get_lane_id();
     const auto num_local_experts = num_experts / num_ranks;
+    // warp_group_id == 0
     const auto warp_group_id = warp_id / num_warps_per_group;
+    // sub_warp_id == 0-31
     const auto sub_warp_id = warp_id % num_warps_per_group;
     const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
+
+    if (sm_id == 0 && thread_id == 0) {
+        printf("Calling combine\n");
+    }
 
     // Data type staffs
     constexpr int kNumElemsPerInt4 = sizeof(int4) / sizeof(nv_bfloat16);
@@ -438,6 +511,8 @@ combine(void* combined_x,
         const auto local_x = static_cast<const int4*>(x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * hidden_bf16_int4;
         const auto local_src_info = src_info + local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank;
+        // rdma_send_x_vec
+        // rdma_send_x is buffer.combine_rdma_send_buffer
         const auto rdma_send_x_vec = static_cast<uint8_t*>(rdma_send_x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_bytes_per_slot;
 
@@ -445,10 +520,18 @@ combine(void* combined_x,
         int offset, num_tokens_to_send;
         unpack2(layout, num_tokens_to_send, offset);
 
+        if (sub_warp_id == 0 and lane_id == 0) {
+            printf("Start sending: sm_id: %d, thread_id: %d, responsible_expert_idx: %d, offset: %d, num_tokens_to_send: %d\n", sm_id, thread_id, responsible_expert_idx, offset, num_tokens_to_send);
+        }
+
         // Issue IBGDA send
         for (int token_idx = offset + sub_warp_id; token_idx < offset + num_tokens_to_send; token_idx += num_warps_per_group) {
             const auto x_int4 = local_x + token_idx * hidden_bf16_int4;
             const auto rdma_send_type_row = reinterpret_cast<int*>(rdma_send_x_vec + token_idx * num_bytes_per_slot);
+            // rdma_send_x + 4 * 16 * 2304 * num_bytes_per_slot + token_idx * num_bytes_per_slot
+            // == rdma_send_x + 64 * 2304 * num_bytes_per_slot + 1 * 2304 * num_bytes_per_slot
+            // == rdma_send_x + 65 * 2304 * num_bytes_per_slot
+            // the bound is 80 * 2304 * num_bytes_per_slot
             const auto rdma_send_x_vec_row = reinterpret_cast<uint8_t*>(rdma_send_type_row);
 
             // Copy directly to local rank, or copy to buffer and issue RDMA
@@ -467,6 +550,10 @@ combine(void* combined_x,
             }
         }
 
+        if (sub_warp_id == 0 and lane_id == 0) {
+            printf("End sending: sm_id: %d, thread_id: %d, responsible_expert_idx: %d, offset: %d, num_tokens_to_send: %d\n", sm_id, thread_id, responsible_expert_idx, offset, num_tokens_to_send);
+        }
+
         // Put the finishing flag
         EP_DEVICE_ASSERT(num_warps_per_group > 1 and num_warp_groups < 16);
         asm volatile("bar.sync %0, %1;" :: "r"(warp_group_id + 1), "r"(num_warps_per_group * 32));
@@ -479,6 +566,7 @@ combine(void* combined_x,
             } else {
                 st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
             }
+            printf("End putting finishing flag: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", sm_id, thread_id, responsible_expert_idx);
             atomic_add_release_global(atomic_clean_flag, -1);
         }
         __syncwarp();
