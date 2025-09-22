@@ -7,6 +7,12 @@ namespace deep_ep {
 
 namespace internode_ll {
 
+__device__ inline unsigned long long get_globaltimer() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
 template <int kNumThreads> __launch_bounds__(kNumThreads, 1)
 __global__ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
                                          int* clean_1, int num_clean_int_1) {
@@ -23,7 +29,7 @@ __global__ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
         clean_1[i] = 0;
 
     if (thread_id == 0) {
-        printf("Cleaning low-latency buffer at timestamp: %llu, address of clean_0: %p, address of clean_1: %p\n", clock64(), clean_0, clean_1);
+        printf("Cleaning low-latency buffer at timestamp: %llu, address of clean_0: %p, address of clean_1: %p, num_clean_int_0: %d, num_clean_int_1: %d\n", get_globaltimer(), clean_0, clean_1, num_clean_int_0, num_clean_int_1);
     }
     // Barrier after cleaning (make sure the low-latency mode works fine)
     nvshmemx_barrier_all_block();
@@ -82,7 +88,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     if (responsible_expert_idx < num_experts) {
         if (thread_id == 0) {
             int num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + responsible_expert_idx);
-            printf("Timestamp: %llu, sm_id: %d, rdma_recv_count + responsible_expert_idx: %p, num_recv_tokens: %d\n", clock64(), sm_id, rdma_recv_count + responsible_expert_idx, num_recv_tokens);
+            printf("Timestamp: %llu, sm_id: %d, rdma_recv_count + responsible_expert_idx: %p, num_recv_tokens: %d\n", get_globaltimer(), sm_id, rdma_recv_count + responsible_expert_idx, num_recv_tokens);
         }
     }
     // nvshmemx_barrier_all_block();
@@ -388,6 +394,9 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             }
         }
     }
+    if (sm_id == 0 && thread_id == 0) {
+        printf("End dispatch\n");
+    }
 }
 
 void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
@@ -623,6 +632,9 @@ combine(void* combined_x,
                 combined_bf16[j] = static_cast<nv_bfloat16>(combined_values[j]);
             (static_cast<int4*>(combined_x) + token_idx * hidden_bf16_int4)[thread_id] = combined_int4;
         }
+    }
+    if (sm_id == 0 && thread_id == 0) {
+        printf("End combine\n");
     }
 }
 

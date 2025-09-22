@@ -214,7 +214,7 @@ void Buffer::sync(const std::vector<int> &device_ids,
 
         // Clean buffer (mainly for low-latency mode)
         CUDA_CHECK(cudaMemset(rdma_buffer_ptr, 0, num_rdma_bytes));
-        printf("Cleaning low-latency buffer at timestamp: %llu, address of rdma_buffer_ptr: %p\n", std::chrono::system_clock::now(), rdma_buffer_ptr);
+        printf("Cleaning low-latency buffer at timestamp: %llu, address of rdma_buffer_ptr: %p, num_rdma_bytes: %d\n", std::chrono::system_clock::now(), rdma_buffer_ptr, num_rdma_bytes);
 
         // Barrier
         internode::barrier();
@@ -1152,7 +1152,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
 
     // Kernel launch
     auto next_clean_meta = next_buffer.clean_meta();
-    printf("Next clean meta: %p, %d\n", next_clean_meta.first, next_clean_meta.second);
+    printf("Dispatch next clean meta: %p, %d\n", next_clean_meta.first, next_clean_meta.second);
     auto launcher = [=](int phases) {
         internode_ll::dispatch(packed_recv_x.data_ptr(), packed_recv_x_scales_ptr,
                                packed_recv_src_info.data_ptr<int>(), packed_recv_layout_range.data_ptr<int64_t>(),
@@ -1347,7 +1347,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
 
     // Kernel launch
     auto next_clean_meta = next_buffer.clean_meta();
-    printf("Next clean meta: %p, %d\n", next_clean_meta.first, next_clean_meta.second);
+    printf("Combine next clean meta: %p, %d\n", next_clean_meta.first, next_clean_meta.second);
     auto launcher = [=](int phases) {
         internode_ll::combine(combined_x.data_ptr(),
                               buffer.combine_rdma_recv_data_buffer, buffer.combine_rdma_recv_flag_buffer,
