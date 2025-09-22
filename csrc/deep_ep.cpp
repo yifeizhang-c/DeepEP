@@ -1185,6 +1185,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     if (return_recv_hook)
         recv_hook = [=]() { launcher(LOW_LATENCY_RECV_PHASE); };
 
+    CUDA_CHECK(cudaDeviceSynchronize());
+
     // Return values
     return {packed_recv_x, packed_recv_x_scales, packed_recv_count, packed_recv_src_info, packed_recv_layout_range, event, recv_hook};
 #else
@@ -1376,6 +1378,8 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     std::optional<std::function<void()>> recv_hook = std::nullopt;
     if (return_recv_hook)
         recv_hook = [=]() { launcher(LOW_LATENCY_RECV_PHASE); };
+
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Return values
     return {combined_x, event, recv_hook};
