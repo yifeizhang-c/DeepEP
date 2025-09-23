@@ -586,9 +586,9 @@ combine(void* combined_x,
         EP_DEVICE_ASSERT(num_warps_per_group > 1);
         if (sub_warp_id == 0 and lane_id == 0) {
             while (ld_acquire_sys_global(rdma_recv_flag + responsible_expert_idx) == 0);
+            // wait for when it is not 0
+            printf("Timestamp: %llu, ranks arrived: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", get_globaltimer() - start_time, sm_id, thread_id, responsible_expert_idx);
         }
-        // wait for when it is not 0
-        printf("Timestamp: %llu, ranks arrived: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", get_globaltimer() - start_time, sm_id, thread_id, responsible_expert_idx);
     }
     cg::this_grid().sync();
 
