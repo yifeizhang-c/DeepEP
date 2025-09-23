@@ -1107,8 +1107,6 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     auto num_scales = hidden / 128, num_topk = static_cast<int>(topk_idx.size(1));
     auto num_local_experts = num_experts / num_ranks;
 
-    internode::barrier();
-
     // Buffer control
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
     EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
@@ -1168,6 +1166,8 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
                                workspace, num_device_sms,
                                launch_stream, phases);
     };
+    CUDA_CHECK(cudaDeviceSynchronize());
+    internode::barrier();
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
 
     // Wait streams
@@ -1184,8 +1184,6 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     std::optional<std::function<void()>> recv_hook = std::nullopt;
     if (return_recv_hook)
         recv_hook = [=]() { launcher(LOW_LATENCY_RECV_PHASE); };
-
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Return values
     return {packed_recv_x, packed_recv_x_scales, packed_recv_count, packed_recv_src_info, packed_recv_layout_range, event, recv_hook};
@@ -1320,8 +1318,6 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     auto num_topk = static_cast<int>(topk_weights.size(1));
     auto num_combined_tokens = static_cast<int>(topk_weights.size(0));
 
-    internode::barrier();
-
     // Buffer control
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
     EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
@@ -1333,6 +1329,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     auto compute_stream = at::cuda::getCurrentCUDAStream();
     auto launch_stream = return_recv_hook ? compute_stream : comm_stream;
     EP_HOST_ASSERT(not (async and return_recv_hook));
+    // let comm_stream wait for compute_stream
     if (not return_recv_hook)
         stream_wait(launch_stream, compute_stream);
 
@@ -1362,6 +1359,8 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                               workspace, num_device_sms,
                               launch_stream, phases, zero_copy);
     };
+    CUDA_CHECK(cudaDeviceSynchronize());
+    internode::barrier();
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
 
     // Wait streams
@@ -1378,8 +1377,6 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
     std::optional<std::function<void()>> recv_hook = std::nullopt;
     if (return_recv_hook)
         recv_hook = [=]() { launcher(LOW_LATENCY_RECV_PHASE); };
-
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     // Return values
     return {combined_x, event, recv_hook};

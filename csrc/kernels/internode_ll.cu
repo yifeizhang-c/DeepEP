@@ -80,15 +80,16 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     // warp_group_id == 0
     // num_warp_groups == 1
     const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
+    size_t start_time = get_globaltimer();
     if (sm_id == 0 && thread_id == 0) {
-        printf("Calling dispatch at timestamp: %llu\n", get_globaltimer());
+        printf("Calling dispatch at timestamp: %llu\n", start_time);
     }
 
     // check whether zero initialized
     if (responsible_expert_idx < num_experts) {
         if (thread_id == 0) {
             int num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + responsible_expert_idx);
-            printf("Timestamp: %llu, sm_id: %d, rdma_recv_count + responsible_expert_idx: %p, num_recv_tokens: %d\n", get_globaltimer(), sm_id, rdma_recv_count + responsible_expert_idx, num_recv_tokens);
+            printf("Timestamp: %llu, sm_id: %d, rdma_recv_count + responsible_expert_idx: %p, num_recv_tokens: %d\n", get_globaltimer() - start_time, sm_id, rdma_recv_count + responsible_expert_idx, num_recv_tokens);
         }
     }
     // nvshmemx_barrier_all_block();
@@ -275,12 +276,12 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         if (dst_p2p_ptr == 0) {
             // void *rptr, const int& value, int pe, int qp_id
             // dst_rank * num_rc_per_pe + dst_expert_local_idx % num_rc_per_pe
-            printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
+            printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer() - start_time, dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
             nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
         } else {
-            printf("Timestamp: %llu, performing st_release_sys_global with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
+            printf("Timestamp: %llu, performing st_release_sys_global with dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer() - start_time, dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
             st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), -num_tokens_sent - 1);
-            // printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add on local node dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer(), dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
+            // printf("Timestamp: %llu, performing nvshmemi_ibgda_amo_nonfetch_add on local node dst_ptr: %p, dst_rank: %d, dst_expert_local_idx: %d, num_tokens_sent: %d, -num_tokens_sent - 1: %d\n", get_globaltimer() - start_time, dst_ptr, dst_rank, dst_expert_local_idx, num_tokens_sent, -num_tokens_sent - 1);
             // nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
         }
 
@@ -303,9 +304,6 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     if (phases & LOW_LATENCY_SEND_PHASE)
         cg::this_grid().sync();
 
-    if (sm_id == 0 && thread_id == 0) {
-        printf("Calling the second part: Receiving and packing.\n");
-    }
     // Receiving and packing
     // responsible_expert_idx is the index of the expert sending the token to the current expert
     // responsible_expert_idx == sm_id
@@ -339,7 +337,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             num_recv_tokens = -num_recv_tokens - 1;
             // reduce over num_recv_tokens over all ranks for local experts 
             recv_token_begin_idx = atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
-            printf("Timestamp: %llu, End receiving tokens: sm_id: %d, thread_id: %d, src_rank: %d, local_expert_idx: %d, num_recv_tokens: %d, recv_token_begin_idx: %d\n", get_globaltimer(), sm_id, thread_id, src_rank, local_expert_idx, num_recv_tokens, recv_token_begin_idx);
+            printf("Timestamp: %llu, End receiving tokens: sm_id: %d, thread_id: %d, src_rank: %d, local_expert_idx: %d, num_recv_tokens: %d, recv_token_begin_idx: %d\n", get_globaltimer() - start_time, sm_id, thread_id, src_rank, local_expert_idx, num_recv_tokens, recv_token_begin_idx);
             shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
             shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
             recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
@@ -395,7 +393,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
         }
     }
     if (sm_id == 0 && thread_id == 0) {
-        printf("End dispatch at timestamp: %llu\n", get_globaltimer());
+        printf("End dispatch at timestamp: %llu\n", get_globaltimer() - start_time);
     }
 }
 
@@ -483,8 +481,9 @@ combine(void* combined_x,
     const auto sub_warp_id = warp_id % num_warps_per_group;
     const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
 
+    size_t start_time = get_globaltimer();
     if (sm_id == 0 && thread_id == 0) {
-        printf("Calling combine at timestamp: %llu\n", get_globaltimer());
+        printf("Calling combine at timestamp: %llu\n", start_time);
     }
 
     // Data type staffs
@@ -529,10 +528,6 @@ combine(void* combined_x,
         int offset, num_tokens_to_send;
         unpack2(layout, num_tokens_to_send, offset);
 
-        if (sub_warp_id == 0 and lane_id == 0) {
-            printf("Start sending: sm_id: %d, thread_id: %d, responsible_expert_idx: %d, offset: %d, num_tokens_to_send: %d\n", sm_id, thread_id, responsible_expert_idx, offset, num_tokens_to_send);
-        }
-
         // Issue IBGDA send
         for (int token_idx = offset + sub_warp_id; token_idx < offset + num_tokens_to_send; token_idx += num_warps_per_group) {
             const auto x_int4 = local_x + token_idx * hidden_bf16_int4;
@@ -560,7 +555,7 @@ combine(void* combined_x,
         }
 
         if (sub_warp_id == 0 and lane_id == 0) {
-            printf("Timestamp: %llu, end sending: sm_id: %d, thread_id: %d, responsible_expert_idx: %d, offset: %d, num_tokens_to_send: %d\n", get_globaltimer(), sm_id, thread_id, responsible_expert_idx, offset, num_tokens_to_send);
+            printf("Timestamp: %llu, end sending: sm_id: %d, thread_id: %d, responsible_expert_idx: %d, offset: %d, num_tokens_to_send: %d\n", get_globaltimer() - start_time, sm_id, thread_id, responsible_expert_idx, offset, num_tokens_to_send);
         }
 
         // Put the finishing flag
@@ -575,7 +570,7 @@ combine(void* combined_x,
             } else {
                 st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
             }
-            printf("Timestamp: %llu, end putting finishing flag: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", get_globaltimer(), sm_id, thread_id, responsible_expert_idx);
+            printf("Timestamp: %llu, end putting finishing flag: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", get_globaltimer() - start_time, sm_id, thread_id, responsible_expert_idx);
             atomic_add_release_global(atomic_clean_flag, -1);
         }
         __syncwarp();
@@ -592,8 +587,14 @@ combine(void* combined_x,
         if (sub_warp_id == 0 and lane_id == 0) {
             while (ld_acquire_sys_global(rdma_recv_flag + responsible_expert_idx) == 0);
         }
+        // wait for when it is not 0
+        printf("Timestamp: %llu, ranks arrived: sm_id: %d, thread_id: %d, responsible_expert_idx: %d\n", get_globaltimer() - start_time, sm_id, thread_id, responsible_expert_idx);
     }
     cg::this_grid().sync();
+
+    if (sm_id == 0 && thread_id == 0) {
+        printf("All ranks arrived at timestamp: %llu\n", get_globaltimer() - start_time);
+    }
 
     // Reduce tokens
     EP_DEVICE_ASSERT(num_topk <= 32 and hidden_bf16_int4 <= num_threads);
@@ -634,7 +635,7 @@ combine(void* combined_x,
         }
     }
     if (sm_id == 0 && thread_id == 0) {
-        printf("End combine at timestamp: %llu\n", get_globaltimer());
+        printf("End combine at timestamp: %llu\n", get_globaltimer() - start_time);
     }
 }
 
