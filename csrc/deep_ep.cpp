@@ -1166,9 +1166,13 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
                                workspace, num_device_sms,
                                launch_stream, phases);
     };
+    printf("cudaDeviceSynchronize and barrier before dispatch with return_recv_hook: %d\n", return_recv_hook);
     CUDA_CHECK(cudaDeviceSynchronize());
     internode::barrier();
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    internode::barrier();
+    printf("cudaDeviceSynchronize and barrier after dispatch\n");
 
     // Wait streams
     std::optional<EventHandle> event;
@@ -1359,9 +1363,13 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                               workspace, num_device_sms,
                               launch_stream, phases, zero_copy);
     };
+    printf("cudaDeviceSynchronize and barrier before combine with return_recv_hook: %d\n", return_recv_hook);
     CUDA_CHECK(cudaDeviceSynchronize());
     internode::barrier();
     launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    internode::barrier();
+    printf("cudaDeviceSynchronize and barrier after combine\n");
 
     // Wait streams
     std::optional<EventHandle> event;
