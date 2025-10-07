@@ -219,8 +219,10 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
         if (dst_p2p_ptr == 0) {
             nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
+            printf("nvshmemi_ibgda rank %d send to rank %d local_expert_idx %d with num_tokens_sent %d\n", rank, dst_rank, dst_expert_local_idx, num_tokens_sent);
         } else {
             st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), -num_tokens_sent - 1);
+            printf("st_release_sys_global rank %d send to rank %d local_expert_idx %d with num_tokens_sent %d\n", rank, dst_rank, dst_expert_local_idx, num_tokens_sent);
         }
 
         // Clean workspace for next use
@@ -265,6 +267,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         if (sub_warp_id == 1 and lane_id == 0) {
             while ((num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank)) == 0);
             num_recv_tokens = -num_recv_tokens - 1;
+            printf("rank %d receive from rank %d local_expert_idx %d with num_recv_tokens %d\n", rank, src_rank, local_expert_idx, num_recv_tokens);
             recv_token_begin_idx = atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
             shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
             shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
@@ -438,8 +441,10 @@ combine(void* combined_x,
             auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
             if (dst_p2p_ptr == 0) {
                 nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), 1, dst_rank, local_expert_idx);
+                printf("nvshmemi_ibgda rank %d send to rank %d local_expert_idx %d\n", rank, dst_rank, local_expert_idx);
             } else {
                 st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
+                printf("st_release_sys_global rank %d send to rank %d local_expert_idx %d\n", rank, dst_rank, local_expert_idx);
             }
             atomic_add_release_global(atomic_clean_flag, -1);
         }
